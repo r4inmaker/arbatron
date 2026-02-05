@@ -1,0 +1,11 @@
+Polymarket Scrapper & Semantic Encoding DB
+
+- Crawler that moves through events and sends
+  markets into a channel
+
+- Embedder that captures these markets and 
+  sends a bulk order to Google AI embedder
+
+- Writer that writes embeddings into the database
+  as they return from the google model
+
