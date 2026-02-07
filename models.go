@@ -153,7 +153,7 @@ func (pop *PolyOutcomePrices) UnmarshalJSON(data []byte) error {
 // Client Models
 type ClientEvent struct {
 	ID          int            `json:"id"`
-	EventID     PolyInt        `json:"event_id"`
+	EventID     int            `json:"event_id"`
 	Title       string         `json:"title"`
 	Description string         `json:"description"`
 	Markets     []ClientMarket `json:"markets"`
@@ -162,7 +162,7 @@ type ClientEvent struct {
 
 type ClientMarket struct {
 	ID            int               `json:"id"`
-	MarketID      PolyInt           `json:"market_id"`
+	MarketID      int               `json:"market_id"`
 	Question      string            `json:"question"`
 	Description   string            `json:"description"`
 	Outcomes      PolyOutcomes      `json:"outcomes"`
@@ -185,7 +185,7 @@ func (pe *PolyEvent) ToClient() ClientEvent {
 
 	return ClientEvent{
 		ID:          0,
-		EventID:     pe.EventID,
+		EventID:     int(pe.EventID),
 		Title:       pe.Title,
 		Description: description,
 		Markets:     markets,
@@ -196,7 +196,7 @@ func (pe *PolyEvent) ToClient() ClientEvent {
 func (pm *PolyMarket) ToClient() ClientMarket {
 	return ClientMarket{
 		ID:            0,
-		MarketID:      pm.MarketID,
+		MarketID:      int(pm.MarketID),
 		Question:      pm.Question,
 		Description:   pm.Description,
 		Outcomes:      pm.Outcomes,

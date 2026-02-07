@@ -1,14 +1,30 @@
 package main
 
+import (
+	"log"
+
+	"github.com/joho/godotenv"
+)
+
 func main() {
-	// server := NewServer("127.0.0.1:4000")
+	godotenv.Load()
+
+	// Storage
+	pgStore, err := NewPostgresStore("user=postgres password=dummy dbname=polymarket sslmode=disable connect_timeout=5")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Server
+	_, err = NewServer("127.0.0.1:4000", *pgStore)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// // Router
 	// router := NewRouter(server)
-	// _, err := NewPostgresStore("user=postgres password=dummy dbname=postgres sslmode=disable")
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
 	// server.Start(router)
 
-	crawler := NewCrawler()
-	crawler.Crawl()
+	scraper := NewScraper(*pgStore)
+	scraper.MockScrape()
 }

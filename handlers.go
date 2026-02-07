@@ -10,7 +10,7 @@ func (s *Server) HomeHandler(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) TestHandler(w http.ResponseWriter, r *http.Request) error {
-	resp, err := http.Get("https://gamma-api.polymarket.com/events?limit=3&offset=1")
+	resp, err := http.Get("https://gamma-api.polymarket.com/events?limit=100&offset=5")
 	if err != nil {
 		return WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "error fetching request"})
 	}
