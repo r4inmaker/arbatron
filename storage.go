@@ -1,14 +1,32 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 )
 
 type PostgresStore struct {
 	DB *sql.DB
+}
+
+func NewPostgresStore(connstring string) (*PostgresStore, error) {
+	pgs := new(PostgresStore)
+	if err := pgs.Connect(connstring); err != nil {
+		return nil, err
+	}
+
+	// if err := pgs.Reset(); err != nil {
+	// 	return nil, err
+	// }
+
+	if err := pgs.Init(); err != nil {
+		return nil, err
+	}
+	return pgs, nil
 }
 
 func (pgs *PostgresStore) Connect(connstring string) error {
@@ -41,9 +59,18 @@ func (pgs *PostgresStore) Init() error {
 		title TEXT,
 		embedding vector(768)
 	);
-	CREATE INDEX ON events (event_id); 
-	CREATE INDEX ON events USING hnsw (embedding vector_cosine_ops);
 	`
+	_, err := pgs.DB.Exec(query)
+	return err
+}
+
+func (pgs *PostgresStore) RemakeIndex() error {
+	query := `
+    DROP INDEX IF EXISTS idx_events_lower_title, idx_events_hnsw;
+    CREATE INDEX idx_events_lower_title ON events (LOWER(title));
+    CREATE INDEX idx_events_hnsw ON events 
+    USING hnsw (embedding vector_cosine_ops);
+    `
 	_, err := pgs.DB.Exec(query)
 	return err
 }
@@ -77,16 +104,31 @@ func (pgs *PostgresStore) InsertEvent(e DBEvent) (int64, error) {
 	return numRows, nil
 }
 
-func NewPostgresStore(connstring string) (*PostgresStore, error) {
-	pgs := new(PostgresStore)
-	if err := pgs.Connect(connstring); err != nil {
-		return nil, err
+func (pgs *PostgresStore) BulkInsertEvents(ctx context.Context, events []DBEvent) error {
+	tx, err := pgs.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	if err := pgs.Reset(); err != nil {
-		return nil, err
+
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(pq.CopyIn("events", "event_id", "title", "embedding"))
+	if err != nil {
+		return err
 	}
-	if err := pgs.Init(); err != nil {
-		return nil, err
+	defer stmt.Close()
+
+	for _, ev := range events {
+		_, err := stmt.Exec(ev.EventID, ev.Title, ev.Embedding)
+		if err != nil {
+			return err
+		}
 	}
-	return pgs, nil
+
+	_, err = stmt.Exec()
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }

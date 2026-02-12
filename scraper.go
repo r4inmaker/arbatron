@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,38 +16,53 @@ import (
 	"google.golang.org/genai"
 )
 
-// Scraper ⛏️
+// Scraper 🚧
 type Scraper struct {
-	Crawler  *Crawler
-	Embedder *Embedder
-	Wg       *sync.WaitGroup
-	Store    PostgresStore
+	Crawler     *Crawler
+	Embedder    *Embedder
+	Wg          *sync.WaitGroup
+	Store       PostgresStore
+	InfoLogger  *log.Logger
+	ErrorLogger *log.Logger
 }
 
-func NewScraper(store PostgresStore) *Scraper {
+func NewScraper(ctx context.Context,
+	store PostgresStore,
+	crawlerDelay, crawlWorkers int,
+	embedderDelay, embedWorkers int,
+	infoLogger, errorLogger *log.Logger) *Scraper {
 
 	jobs := make(chan int, 1024)
-	events := make(chan []ClientEvent, 128)
-	crawlerTicker := time.NewTicker(60 * time.Millisecond)
+	events := make(chan []ClientEvent, 64)
+	crawlerTicker := time.NewTicker(time.Duration(crawlerDelay) * time.Millisecond)
 	crawlerWg := new(sync.WaitGroup)
 	embedderWg := new(sync.WaitGroup)
 	masterWg := new(sync.WaitGroup)
 
 	crawler := &Crawler{
-		Jobs:   jobs,
-		Events: events,
-		Wg:     crawlerWg,
-		Ticker: crawlerTicker,
-		Store:  store,
+		Context:     ctx,
+		Jobs:        jobs,
+		Events:      events,
+		Wg:          crawlerWg,
+		Ticker:      crawlerTicker,
+		Store:       store,
+		InfoLogger:  infoLogger,
+		ErrorLogger: errorLogger,
+		Workers:     crawlWorkers,
 	}
 
 	embedder := &Embedder{
+		Context:           ctx,
 		GeminiKey:         os.Getenv("GEMINI_KEY"),
 		EmbeddingTaskType: "SEMANTIC_SIMILARITY",
 		ModelName:         "gemini-embedding-001",
 		Events:            events,
 		Wg:                embedderWg,
 		Store:             store,
+		InfoLogger:        infoLogger,
+		ErrorLogger:       errorLogger,
+		Delay:             embedderDelay,
+		Workers:           embedWorkers,
 	}
 
 	return &Scraper{
@@ -64,11 +80,15 @@ func (s *Scraper) Scrape() {
 
 // Crawler ⛏️
 type Crawler struct {
-	Jobs   chan int
-	Events chan []ClientEvent
-	Wg     *sync.WaitGroup
-	Ticker *time.Ticker
-	Store  PostgresStore
+	Context     context.Context
+	Jobs        chan int
+	Events      chan []ClientEvent
+	Wg          *sync.WaitGroup
+	Ticker      *time.Ticker
+	Store       PostgresStore
+	InfoLogger  *log.Logger
+	ErrorLogger *log.Logger
+	Workers     int
 }
 
 func (c *Crawler) Producer(ctx context.Context) {
@@ -79,7 +99,7 @@ func (c *Crawler) Producer(ctx context.Context) {
 		select {
 		case <-c.Ticker.C:
 			c.Jobs <- offset
-			offset += 1000
+			offset += 100
 		case <-ctx.Done():
 			return
 		}
@@ -90,15 +110,15 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int) {
 	defer c.Wg.Done()
 
 	for job := range c.Jobs {
-		query := fmt.Sprintf("https://gamma-api.polymarket.com/events?limit=1000&offset=%d", job)
+		query := fmt.Sprintf("https://gamma-api.polymarket.com/events?limit=100&offset=%d", job)
 		resp, err := http.Get(query)
 		if err != nil {
-			log.Printf("Worker id:%d failed job:%d", id, job)
+			c.ErrorLogger.Printf("gamma-api request fetch failed (%s)", err.Error())
 		}
 
 		var polyEvents []PolyEvent
 		if err := json.NewDecoder(resp.Body).Decode(&polyEvents); err != nil {
-			log.Printf("Worker id:%d failed job:%d", id, job)
+			c.ErrorLogger.Printf("gamma-api response decoding failed (%s)", err.Error())
 		}
 
 		// Terminate Crawl
@@ -140,7 +160,7 @@ func (c *Crawler) Sift(ctx context.Context, events []ClientEvent) []ClientEvent 
 
 	rows, err := c.Store.DB.QueryContext(ctx, query, pq.Array(eventIDs))
 	if err != nil {
-		log.Printf("error: %v", err)
+		c.ErrorLogger.Printf("failed to query from DB (%s)", err.Error())
 		return []ClientEvent{}
 	}
 	defer rows.Close()
@@ -150,6 +170,7 @@ func (c *Crawler) Sift(ctx context.Context, events []ClientEvent) []ClientEvent 
 		var id int
 		if err := rows.Scan(&id); err != nil {
 			// Silent fail
+			c.ErrorLogger.Printf("failed to read from DB rows (%s)", err.Error())
 			continue
 		}
 		idMap[id] = struct{}{}
@@ -167,122 +188,131 @@ func (c *Crawler) Sift(ctx context.Context, events []ClientEvent) []ClientEvent 
 
 func (c *Crawler) Crawl() {
 	now := time.Now()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(c.Context)
 	defer cancel()
 
 	go c.Producer(ctx)
-	c.Wg.Add(5)
-	for i := range 5 {
+	c.Wg.Add(c.Workers)
+	for i := range c.Workers {
 		go c.Worker(ctx, cancel, i)
 	}
 
 	<-ctx.Done()
 	c.Wg.Wait()
 	close(c.Events)
-	time.Sleep(500 * time.Millisecond)
-	fmt.Printf("Time for scraping: %v s\n", time.Since(now))
+
+	duration := TimeFormat(now)
+	c.InfoLogger.Printf("Scraping complete. Time elapsed: %s\n", duration)
 }
 
+// Embedder 💾
 type Embedder struct {
+	Context           context.Context
 	GeminiKey         string
 	EmbeddingTaskType string
 	ModelName         string
 	Events            chan []ClientEvent
 	Wg                *sync.WaitGroup
 	Store             PostgresStore
+	InfoLogger        *log.Logger
+	ErrorLogger       *log.Logger
+	Delay             int
+	Workers           int
 }
 
-// Perform DB lookup first based on EventID to check if we have it already in the db
-
-// Perform concurrent batch embedding
-
-// Write the results back into the db
-
-func (e *Embedder) Worker(id int) {
+func (e *Embedder) Worker(id int, events chan []ClientEvent) {
 	defer e.Wg.Done()
 
-	ctx := context.Background()
+	ctx := e.Context
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey: e.GeminiKey,
 	})
 	if err != nil {
-		log.Printf("error: %w", err)
+		e.ErrorLogger.Printf("failed to create GENAI client (%s)", err.Error())
 		return
 	}
 
-	for eventBatch := range e.Events {
-		for i := 0; i < len(eventBatch); i += 100 {
-			end := i + 100
-			if end > len(eventBatch) {
-				end = len(eventBatch)
-			}
-			eventChunk := eventBatch[i:end]
+	for eventBatch := range events {
+		if len(eventBatch) == 0 {
+			continue
+		}
 
-			var contents []*genai.Content
-			for _, event := range eventChunk {
-				contents = append(contents, genai.NewContentFromText(event.Title, genai.RoleUser))
-			}
+		// Only 100 embeddings per request are allowed
+		var contents []*genai.Content
+		for _, event := range eventBatch {
+			contents = append(contents, genai.NewContentFromText(event.Title, genai.RoleUser))
+		}
+
+		var embeddings []*genai.ContentEmbedding
+		for {
 			result, err := client.Models.EmbedContent(ctx, e.ModelName, contents,
 				&genai.EmbedContentConfig{
 					TaskType:             e.EmbeddingTaskType,
 					OutputDimensionality: genai.Ptr(int32(768))})
 
 			if err != nil {
-				log.Printf("error: %v", err)
-				return
-			}
-
-			embeddings := result.Embeddings
-
-			var event DBEvent
-
-			for i, embd := range embeddings {
-				event = DBEvent{
-					EventID:   eventChunk[i].EventID,
-					Title:     eventChunk[i].Title,
-					Embedding: VecToString(embd.Values),
-				}
-
-				_, err := e.Store.InsertEvent(event)
-				if err != nil {
-					log.Printf("error: %v", err)
+				e.ErrorLogger.Printf("failed to embed content (%s)", err.Error())
+				if strings.Contains(err.Error(), "429") {
+					// Rate Limit (bootleg fix, make more elegant later)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Second):
+						continue
+					}
+				} else {
+					// Return to avoid nil pointer dereference downstream
+					return
 				}
 			}
 
+			embeddings = result.Embeddings
+			break
 		}
+
+		var DBEvents []DBEvent
+		for i, e := range eventBatch {
+			DBEvents = append(DBEvents,
+				DBEvent{
+					EventID:   e.EventID,
+					Title:     e.Title,
+					Embedding: VecToString(embeddings[i].Values),
+				},
+			)
+		}
+
+		if err := e.Store.BulkInsertEvents(ctx, DBEvents); err != nil {
+			e.ErrorLogger.Printf("failed to insert %d events into the DB (%s)", len(DBEvents), err.Error())
+		} else {
+			e.InfoLogger.Printf("inserted %d events into the DB", len(DBEvents))
+		}
+
 	}
 }
 
 func (e *Embedder) Embed() {
-	e.Wg.Add(5)
+	dispatchEvents := make(chan []ClientEvent, 64)
+	ticker := time.NewTicker(time.Duration(e.Delay) * time.Millisecond)
 
+	// Dispatcher
+	go func() {
+		defer close(dispatchEvents)
+		for eventBatch := range e.Events {
+			select {
+			case <-ticker.C:
+				dispatchEvents <- eventBatch
+			case <-e.Context.Done():
+				return
+			}
+		}
+	}()
+
+	e.Wg.Add(e.Workers)
 	// Worker Pool
-	for i := range 5 {
-		go e.Worker(i)
+	for i := range e.Workers {
+		time.Sleep(100 * time.Millisecond)
+		go e.Worker(i, dispatchEvents)
 	}
+
 	e.Wg.Wait()
-}
-
-// Mocking for tests
-func (c *Crawler) MockProducer() {
-	c.Jobs <- 0
-	close(c.Jobs)
-}
-
-func (c *Crawler) MockWorkerPool() {
-	ctx := context.Background()
-	c.Wg.Add(1)
-	go c.Worker(ctx, func() {}, 0)
-}
-
-func (c *Crawler) MockCrawl() {
-	go c.MockProducer()
-	c.MockWorkerPool()
-}
-
-func (s *Scraper) MockScrape() {
-	go s.Crawler.MockCrawl()
-	s.Embedder.Wg.Add(1)
-	go s.Embedder.Worker(0)
-	s.Embedder.Wg.Wait()
 }
