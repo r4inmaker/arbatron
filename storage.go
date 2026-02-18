@@ -59,6 +59,7 @@ func (pgs *PostgresStore) Init() error {
 		title TEXT,
 		embedding vector(768)
 	);
+	CREATE INDEX IF NOT EXISTS idx_event_id ON events(event_id);
 	`
 	_, err := pgs.DB.Exec(query)
 	return err
@@ -131,4 +132,15 @@ func (pgs *PostgresStore) BulkInsertEvents(ctx context.Context, events []DBEvent
 	}
 
 	return tx.Commit()
+}
+
+func (pgs *PostgresStore) GetEventCount() (int64, error) {
+	query := `
+		SELECT COUNT(*) FROM events;
+	`
+	var count int64
+	if err := pgs.DB.QueryRow(query).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }

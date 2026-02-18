@@ -37,7 +37,7 @@ func main() {
 	// router := NewRouter(server)
 	// server.Start(router)
 
-	scraper := NewScraper(ctx, *pgStore, 500, 5, 200, 1, InfoLogger, ErrorLogger)
-	scraper.Scrape()
+	scraper := NewScraper(ctx, *pgStore, 200, 5, 2050, 1, InfoLogger, ErrorLogger)
+	scraper.Scrape(true)
 	pgStore.RemakeIndex()
 }

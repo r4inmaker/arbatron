@@ -73,9 +73,9 @@ func NewScraper(ctx context.Context,
 	}
 }
 
-func (s *Scraper) Scrape() {
-	go s.Crawler.Crawl()
-	s.Embedder.Embed()
+func (s *Scraper) Scrape(log bool) {
+	go s.Crawler.Crawl(log)
+	s.Embedder.Embed(log)
 }
 
 // Crawler ⛏️
@@ -106,7 +106,7 @@ func (c *Crawler) Producer(ctx context.Context) {
 	}
 }
 
-func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int) {
+func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int, log bool) {
 	defer c.Wg.Done()
 
 	for job := range c.Jobs {
@@ -134,9 +134,19 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int) {
 		}
 
 		// Sift Events
-		clientEvents = c.Sift(ctx, clientEvents)
+		clientEventsSifted := c.Sift(ctx, clientEvents)
+		if (len(clientEventsSifted) < len(clientEvents)) && log {
+			//numEvents, err := c.Store.GetEventCount()
+			if err != nil {
+				c.ErrorLogger.Printf("[ ⛏️ ] counting events failed for some reason")
+			} else {
+				c.InfoLogger.Printf("[ ⛏️ ] skipped %d events because they are already in DB", len(clientEvents)-len(clientEventsSifted))
+			}
+		}
 
-		c.Events <- clientEvents
+		if len(clientEventsSifted) > 0 {
+			c.Events <- clientEventsSifted
+		}
 		resp.Body.Close()
 	}
 }
@@ -186,7 +196,7 @@ func (c *Crawler) Sift(ctx context.Context, events []ClientEvent) []ClientEvent 
 	return filteredEvents
 }
 
-func (c *Crawler) Crawl() {
+func (c *Crawler) Crawl(log bool) {
 	now := time.Now()
 	ctx, cancel := context.WithCancel(c.Context)
 	defer cancel()
@@ -194,7 +204,7 @@ func (c *Crawler) Crawl() {
 	go c.Producer(ctx)
 	c.Wg.Add(c.Workers)
 	for i := range c.Workers {
-		go c.Worker(ctx, cancel, i)
+		go c.Worker(ctx, cancel, i, log)
 	}
 
 	<-ctx.Done()
@@ -220,7 +230,7 @@ type Embedder struct {
 	Workers           int
 }
 
-func (e *Embedder) Worker(id int, events chan []ClientEvent) {
+func (e *Embedder) Worker(id int, events chan []ClientEvent, log bool) {
 	defer e.Wg.Done()
 
 	ctx := e.Context
@@ -238,9 +248,9 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent) {
 		}
 
 		// Only 100 embeddings per request are allowed
-		var contents []*genai.Content
-		for _, event := range eventBatch {
-			contents = append(contents, genai.NewContentFromText(event.Title, genai.RoleUser))
+		contents := make([]*genai.Content, len(eventBatch))
+		for i, event := range eventBatch {
+			contents[i] = genai.NewContentFromText(event.Title, genai.RoleUser)
 		}
 
 		var embeddings []*genai.ContentEmbedding
@@ -251,7 +261,7 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent) {
 					OutputDimensionality: genai.Ptr(int32(768))})
 
 			if err != nil {
-				e.ErrorLogger.Printf("failed to embed content (%s)", err.Error())
+				e.ErrorLogger.Printf("[ 💾 ] failed to embed content (%s)", err.Error())
 				if strings.Contains(err.Error(), "429") {
 					// Rate Limit (bootleg fix, make more elegant later)
 					select {
@@ -282,15 +292,20 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent) {
 		}
 
 		if err := e.Store.BulkInsertEvents(ctx, DBEvents); err != nil {
-			e.ErrorLogger.Printf("failed to insert %d events into the DB (%s)", len(DBEvents), err.Error())
-		} else {
-			e.InfoLogger.Printf("inserted %d events into the DB", len(DBEvents))
+			e.ErrorLogger.Printf("[ 💾 ] failed to insert %d events into the DB (%s)", len(DBEvents), err.Error())
+		} else if log {
+			numEvents, err := e.Store.GetEventCount()
+			if err != nil {
+				e.ErrorLogger.Printf("[ 💾 ] counting events failed for some reason")
+			} else {
+				e.InfoLogger.Printf("[ 💾 ] inserted %d events into the DB, current number of events in the DB: [%6d]", len(DBEvents), numEvents)
+			}
 		}
 
 	}
 }
 
-func (e *Embedder) Embed() {
+func (e *Embedder) Embed(log bool) {
 	dispatchEvents := make(chan []ClientEvent, 64)
 	ticker := time.NewTicker(time.Duration(e.Delay) * time.Millisecond)
 
@@ -311,7 +326,7 @@ func (e *Embedder) Embed() {
 	// Worker Pool
 	for i := range e.Workers {
 		time.Sleep(100 * time.Millisecond)
-		go e.Worker(i, dispatchEvents)
+		go e.Worker(i, dispatchEvents, log)
 	}
 
 	e.Wg.Wait()
