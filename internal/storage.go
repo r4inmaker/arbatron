@@ -1,9 +1,10 @@
-package main
+package internal
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
@@ -19,9 +20,9 @@ func NewPostgresStore(connstring string) (*PostgresStore, error) {
 		return nil, err
 	}
 
-	// if err := pgs.Reset(); err != nil {
-	// 	return nil, err
-	// }
+	if err := pgs.Reset(); err != nil {
+		return nil, err
+	}
 
 	if err := pgs.Init(); err != nil {
 		return nil, err
@@ -43,13 +44,6 @@ func (pgs *PostgresStore) Connect(connstring string) error {
 	return nil
 }
 
-type DBEvent struct {
-	ID        int
-	EventID   int
-	Title     string
-	Embedding string
-}
-
 func (pgs *PostgresStore) Init() error {
 	query := `
 	CREATE EXTENSION IF NOT EXISTS vector;
@@ -57,7 +51,9 @@ func (pgs *PostgresStore) Init() error {
 		id SERIAL PRIMARY KEY,
 		event_id BIGINT UNIQUE,
 		title TEXT,
-		embedding vector(768)
+		embedding vector(768),
+		start_date TIMESTAMP,
+		end_date TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_event_id ON events(event_id);
 	`
@@ -65,14 +61,14 @@ func (pgs *PostgresStore) Init() error {
 	return err
 }
 
-func (pgs *PostgresStore) RemakeIndex() error {
+func (pgs *PostgresStore) RemakeIndex(ctx context.Context) error {
 	query := `
     DROP INDEX IF EXISTS idx_events_lower_title, idx_events_hnsw;
     CREATE INDEX idx_events_lower_title ON events (LOWER(title));
     CREATE INDEX idx_events_hnsw ON events 
     USING hnsw (embedding vector_cosine_ops);
     `
-	_, err := pgs.DB.Exec(query)
+	_, err := pgs.DB.ExecContext(ctx, query)
 	return err
 }
 
@@ -87,23 +83,23 @@ func (pgs *PostgresStore) Reset() error {
 	return err
 }
 
-func (pgs *PostgresStore) InsertEvent(e DBEvent) (int64, error) {
-	query := `
-		INSERT INTO events (event_id, title, embedding)
-		VALUES ($1, $2, $3);
-	`
+// func (pgs *PostgresStore) InsertEvent(ctx context.Context, e DBEvent) (int64, error) {
+// 	query := `
+// 		INSERT INTO events (event_id, title, embedding)
+// 		VALUES ($1, $2, $3);
+// 	`
 
-	result, err := pgs.DB.Exec(query)
-	if err != nil {
-		return 0, err
-	}
-	numRows, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
+// 	result, err := pgs.DB.ExecContext(ctx, query)
+// 	if err != nil {
+// 		return 0, err
+// 	}
+// 	numRows, err := result.RowsAffected()
+// 	if err != nil {
+// 		return 0, err
+// 	}
 
-	return numRows, nil
-}
+// 	return numRows, nil
+// }
 
 func (pgs *PostgresStore) BulkInsertEvents(ctx context.Context, events []DBEvent) error {
 	tx, err := pgs.DB.BeginTx(ctx, nil)
@@ -113,14 +109,14 @@ func (pgs *PostgresStore) BulkInsertEvents(ctx context.Context, events []DBEvent
 
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(pq.CopyIn("events", "event_id", "title", "embedding"))
+	stmt, err := tx.Prepare(pq.CopyIn("events", "event_id", "title", "embedding", "start_date", "end_date"))
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, ev := range events {
-		_, err := stmt.Exec(ev.EventID, ev.Title, ev.Embedding)
+		_, err := stmt.Exec(ev.EventID, ev.Title, ev.Embedding, time.Time(ev.StartDate), time.Time(ev.EndDate))
 		if err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"arbatron/internal"
 	"encoding/json"
 	"net/http"
 )
@@ -16,12 +17,12 @@ func (s *Server) TestHandler(w http.ResponseWriter, r *http.Request) error {
 	}
 	defer resp.Body.Close()
 
-	var polyEvents []PolyEvent
+	var polyEvents []internal.PolyEvent
 	if err := json.NewDecoder(resp.Body).Decode(&polyEvents); err != nil {
 		return err
 	}
 
-	clientEvents := make([]ClientEvent, len(polyEvents))
+	clientEvents := make([]internal.ClientEvent, len(polyEvents))
 	for i, e := range polyEvents {
 		clientEvents[i] = e.ToClient()
 	}

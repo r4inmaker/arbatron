@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"context"
@@ -28,6 +28,7 @@ type Scraper struct {
 
 func NewScraper(ctx context.Context,
 	store PostgresStore,
+	crawlerURL string, crawlerLimit int,
 	crawlerDelay, crawlWorkers int,
 	embedderDelay, embedWorkers int,
 	infoLogger, errorLogger *log.Logger) *Scraper {
@@ -41,6 +42,8 @@ func NewScraper(ctx context.Context,
 
 	crawler := &Crawler{
 		Context:     ctx,
+		URL:         crawlerURL,
+		Limit:       crawlerLimit,
 		Jobs:        jobs,
 		Events:      events,
 		Wg:          crawlerWg,
@@ -81,6 +84,8 @@ func (s *Scraper) Scrape(log bool) {
 // Crawler ⛏️
 type Crawler struct {
 	Context     context.Context
+	URL         string
+	Limit       int
 	Jobs        chan int
 	Events      chan []ClientEvent
 	Wg          *sync.WaitGroup
@@ -110,7 +115,7 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int, log boo
 	defer c.Wg.Done()
 
 	for job := range c.Jobs {
-		query := fmt.Sprintf("https://gamma-api.polymarket.com/events?limit=100&offset=%d", job)
+		query := strings.Join([]string{c.URL, fmt.Sprintf("limit=100&offset=%d", job)}, "&")
 		resp, err := http.Get(query)
 		if err != nil {
 			c.ErrorLogger.Printf("gamma-api request fetch failed (%s)", err.Error())
@@ -287,6 +292,8 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent, log bool) {
 					EventID:   e.EventID,
 					Title:     e.Title,
 					Embedding: VecToString(embeddings[i].Values),
+					StartDate: e.StartDate,
+					EndDate:   e.EndDate,
 				},
 			)
 		}

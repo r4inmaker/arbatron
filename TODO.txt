@@ -1,1 +1,10 @@
+TODO
+
+- Use context in database operations, so shutdown is graceful all the way
+
+- Add expiry on the events so they expire in the database (has to be done manually in postgres lol)
+
+- Create a sift package with filter interface so that results may be sifted,
+  based on arbitrary criteria
+  Some filtering done by the URL, other by manually checking sift 
 

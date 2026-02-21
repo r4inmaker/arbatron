@@ -1,6 +1,7 @@
 package main
 
 import (
+	"arbatron/internal"
 	"log"
 	"net/http"
 	"os"
@@ -12,10 +13,10 @@ import (
 type Server struct {
 	ListenAddr string
 	Config     Config
-	Store      PostgresStore
+	Store      internal.PostgresStore
 }
 
-func NewServer(listenAddr string, store PostgresStore) (*Server, error) {
+func NewServer(listenAddr string, store internal.PostgresStore) (*Server, error) {
 
 	return &Server{
 		ListenAddr: listenAddr,

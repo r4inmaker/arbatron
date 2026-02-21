@@ -1,7 +1,9 @@
 package main
 
 import (
+	"arbatron/internal"
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -18,7 +20,7 @@ func main() {
 	ErrorLogger := log.New(os.Stdout, "\033[31mERROR\033[0m\t", log.Ldate|log.Ltime|log.Lshortfile)
 
 	// Storage
-	pgStore, err := NewPostgresStore("user=postgres password=dummy dbname=polymarket sslmode=disable connect_timeout=5")
+	pgStore, err := internal.NewPostgresStore("user=postgres password=dummy dbname=polymarket sslmode=disable connect_timeout=5")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -37,7 +39,14 @@ func main() {
 	// router := NewRouter(server)
 	// server.Start(router)
 
-	scraper := NewScraper(ctx, *pgStore, 200, 5, 2050, 1, InfoLogger, ErrorLogger)
+	eventURL := internal.NewEventsURL(
+		internal.WithOrder("startDate"),
+		internal.WithAscending(true),
+	)
+
+	fmt.Println(eventURL)
+	scraper := internal.NewScraper(ctx, *pgStore, eventURL, 10_000, 200, 5, 2050, 1, InfoLogger, ErrorLogger)
 	scraper.Scrape(true)
-	pgStore.RemakeIndex()
+	//pgStore.RemakeIndex()
+
 }
