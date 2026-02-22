@@ -3,18 +3,19 @@ package internal
 import (
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // URL filtering options
-type SiftOption func(v url.Values)
+type SiftURLOption func(v url.Values)
 
-func WithAscending(asc bool) SiftOption {
+func WithAscending(asc bool) SiftURLOption {
 	return func(v url.Values) {
 		v.Set("ascending", strconv.FormatBool(asc))
 	}
 }
 
-func WithOrder(field string) SiftOption {
+func WithOrder(field string) SiftURLOption {
 	allowed := map[string]bool{
 		"id":          true,
 		"startDate":   true,
@@ -34,7 +35,7 @@ func WithOrder(field string) SiftOption {
 	}
 }
 
-func WithQuery(searchTerm string) SiftOption {
+func WithQuery(searchTerm string) SiftURLOption {
 	return func(v url.Values) {
 		if searchTerm != "" {
 			v.Set("q", searchTerm)
@@ -42,19 +43,19 @@ func WithQuery(searchTerm string) SiftOption {
 	}
 }
 
-func WithTagID(id int) SiftOption {
+func WithTagID(id int) SiftURLOption {
 	return func(v url.Values) {
 		v.Set("tag_id", strconv.Itoa(id))
 	}
 }
 
-func WithRelatedTags(related bool) SiftOption {
+func WithRelatedTags(related bool) SiftURLOption {
 	return func(v url.Values) {
 		v.Set("related_tags", strconv.FormatBool(related))
 	}
 }
 
-func WithSlug(slug string) SiftOption {
+func WithSlug(slug string) SiftURLOption {
 	return func(v url.Values) {
 		if slug != "" {
 			v.Set("slug", slug)
@@ -62,7 +63,7 @@ func WithSlug(slug string) SiftOption {
 	}
 }
 
-func NewEventsURL(opts ...SiftOption) string {
+func NewEventsURL(opts ...SiftURLOption) string {
 	u, _ := url.Parse("https://gamma-api.polymarket.com/events")
 
 	q := u.Query()
@@ -78,3 +79,27 @@ func NewEventsURL(opts ...SiftOption) string {
 }
 
 // Advanced filtering options
+type SiftAdvancedOption func(c *ClientEvent) bool
+
+func ExpiresBetween(min, max time.Duration) SiftAdvancedOption {
+	return func(c *ClientEvent) bool {
+		if remaining := time.Until(time.Time(c.EndDate)); min < remaining && remaining < max {
+			return true
+		}
+
+		return false
+	}
+}
+
+func NewSiftAdvancedOption(opts ...SiftAdvancedOption) SiftAdvancedOption {
+	
+	return func(c *ClientEvent) bool {
+		for _, opt := range opts {
+			if !opt(c) {
+				return false
+			}
+		}
+
+		return true
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lib/pq"
@@ -28,9 +29,11 @@ type Scraper struct {
 
 func NewScraper(ctx context.Context,
 	store PostgresStore,
-	crawlerURL string, crawlerLimit int,
+	crawlerURL string,
+	crawlerSiftOption SiftAdvancedOption,
 	crawlerDelay, crawlWorkers int,
 	embedderDelay, embedWorkers int,
+	embedderLimit int64,
 	infoLogger, errorLogger *log.Logger) *Scraper {
 
 	jobs := make(chan int, 1024)
@@ -43,7 +46,7 @@ func NewScraper(ctx context.Context,
 	crawler := &Crawler{
 		Context:     ctx,
 		URL:         crawlerURL,
-		Limit:       crawlerLimit,
+		SiftOption:	 crawlerSiftOption,
 		Jobs:        jobs,
 		Events:      events,
 		Wg:          crawlerWg,
@@ -66,6 +69,8 @@ func NewScraper(ctx context.Context,
 		ErrorLogger:       errorLogger,
 		Delay:             embedderDelay,
 		Workers:           embedWorkers,
+		Count: 						 atomic.Int64{},
+		Limit: 						 embedderLimit,
 	}
 
 	return &Scraper{
@@ -73,19 +78,25 @@ func NewScraper(ctx context.Context,
 		Embedder: embedder,
 		Wg:       masterWg,
 		Store:    store,
+		InfoLogger: infoLogger,
+		ErrorLogger: errorLogger,
 	}
 }
 
 func (s *Scraper) Scrape(log bool) {
+	now := time.Now()
+	s.Wg.Add(1)
 	go s.Crawler.Crawl(log)
-	s.Embedder.Embed(log)
+	s.Embedder.Embed(log, s.Wg)
+	duration := TimeFormat(now)
+	s.InfoLogger.Printf("Scraping complete. Time elapsed: %s\n", duration)
 }
 
 // Crawler ⛏️
 type Crawler struct {
 	Context     context.Context
 	URL         string
-	Limit       int
+	SiftOption 	SiftAdvancedOption
 	Jobs        chan int
 	Events      chan []ClientEvent
 	Wg          *sync.WaitGroup
@@ -141,16 +152,20 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int, log boo
 		// Sift Events
 		clientEventsSifted := c.Sift(ctx, clientEvents)
 		if (len(clientEventsSifted) < len(clientEvents)) && log {
-			//numEvents, err := c.Store.GetEventCount()
 			if err != nil {
 				c.ErrorLogger.Printf("[ ⛏️ ] counting events failed for some reason")
 			} else {
-				c.InfoLogger.Printf("[ ⛏️ ] skipped %d events because they are already in DB", len(clientEvents)-len(clientEventsSifted))
+				c.InfoLogger.Printf("[ ⛏️ ] skipped %d events", len(clientEvents)-len(clientEventsSifted))
 			}
 		}
 
 		if len(clientEventsSifted) > 0 {
-			c.Events <- clientEventsSifted
+			select {
+			case <-ctx.Done():
+				return
+			case c.Events <- clientEventsSifted:
+			}
+			
 		}
 		resp.Body.Close()
 	}
@@ -191,9 +206,10 @@ func (c *Crawler) Sift(ctx context.Context, events []ClientEvent) []ClientEvent 
 		idMap[id] = struct{}{}
 	}
 
+	// Skip if event exists in db or event doesnt pass the filter criteria
 	filteredEvents := make([]ClientEvent, 0, len(idMap))
 	for _, e := range events {
-		if _, exists := idMap[e.EventID]; exists {
+		if _, exists := idMap[e.EventID]; exists && c.SiftOption(&e) {
 			filteredEvents = append(filteredEvents, e)
 		}
 	}
@@ -202,7 +218,6 @@ func (c *Crawler) Sift(ctx context.Context, events []ClientEvent) []ClientEvent 
 }
 
 func (c *Crawler) Crawl(log bool) {
-	now := time.Now()
 	ctx, cancel := context.WithCancel(c.Context)
 	defer cancel()
 
@@ -214,10 +229,7 @@ func (c *Crawler) Crawl(log bool) {
 
 	<-ctx.Done()
 	c.Wg.Wait()
-	close(c.Events)
-
-	duration := TimeFormat(now)
-	c.InfoLogger.Printf("Scraping complete. Time elapsed: %s\n", duration)
+	close(c.Events)	
 }
 
 // Embedder 💾
@@ -233,12 +245,13 @@ type Embedder struct {
 	ErrorLogger       *log.Logger
 	Delay             int
 	Workers           int
+	Limit 					  int64
+	Count 					  atomic.Int64
 }
 
-func (e *Embedder) Worker(id int, events chan []ClientEvent, log bool) {
+func (e *Embedder) Worker(ctx context.Context, cancelFunc func(), id int, events chan []ClientEvent, log bool) {
 	defer e.Wg.Done()
 
-	ctx := e.Context
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey: e.GeminiKey,
 	})
@@ -248,11 +261,12 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent, log bool) {
 	}
 
 	for eventBatch := range events {
+
 		if len(eventBatch) == 0 {
 			continue
 		}
 
-		// Only 100 embeddings per request are allowed
+		// Embed titles
 		contents := make([]*genai.Content, len(eventBatch))
 		for i, event := range eventBatch {
 			contents[i] = genai.NewContentFromText(event.Title, genai.RoleUser)
@@ -285,6 +299,7 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent, log bool) {
 			break
 		}
 
+		// Write them to the DB
 		var DBEvents []DBEvent
 		for i, e := range eventBatch {
 			DBEvents = append(DBEvents,
@@ -309,10 +324,17 @@ func (e *Embedder) Worker(id int, events chan []ClientEvent, log bool) {
 			}
 		}
 
+		
+		if e.Count.Load() >= e.Limit {
+			cancelFunc()
+		}
+		e.Count.Add(int64(len(DBEvents)))
 	}
 }
 
-func (e *Embedder) Embed(log bool) {
+func (e *Embedder) Embed(log bool, masterWG *sync.WaitGroup) {
+	ctx, cancel := context.WithCancel(e.Context)
+	defer cancel()
 	dispatchEvents := make(chan []ClientEvent, 64)
 	ticker := time.NewTicker(time.Duration(e.Delay) * time.Millisecond)
 
@@ -322,19 +344,23 @@ func (e *Embedder) Embed(log bool) {
 		for eventBatch := range e.Events {
 			select {
 			case <-ticker.C:
-				dispatchEvents <- eventBatch
-			case <-e.Context.Done():
+				select {
+					case dispatchEvents <- eventBatch:
+					case <- ctx.Done():
+						return
+				}
+			case <- ctx.Done():
 				return
 			}
 		}
 	}()
 
-	e.Wg.Add(e.Workers)
 	// Worker Pool
 	for i := range e.Workers {
-		time.Sleep(100 * time.Millisecond)
-		go e.Worker(i, dispatchEvents, log)
+		e.Wg.Add(1)
+		go e.Worker(ctx, cancel, i, dispatchEvents, log)
 	}
 
 	e.Wg.Wait()
+	masterWG.Done()
 }

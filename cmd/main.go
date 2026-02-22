@@ -3,11 +3,11 @@ package main
 import (
 	"arbatron/internal"
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -39,14 +39,18 @@ func main() {
 	// router := NewRouter(server)
 	// server.Start(router)
 
+	// Sifting Options
 	eventURL := internal.NewEventsURL(
 		internal.WithOrder("startDate"),
 		internal.WithAscending(true),
 	)
 
-	fmt.Println(eventURL)
-	scraper := internal.NewScraper(ctx, *pgStore, eventURL, 10_000, 200, 5, 2050, 1, InfoLogger, ErrorLogger)
+	siftOption := internal.NewSiftAdvancedOption(
+		internal.ExpiresBetween(0*time.Second, 90 * 24 * time.Hour),
+	)
+
+	scraper := internal.NewScraper(ctx, *pgStore, eventURL, siftOption, 200, 5, 2050, 1, 3, InfoLogger, ErrorLogger)
 	scraper.Scrape(true)
 	//pgStore.RemakeIndex()
-
+	scraper.Wg.Wait()
 }
