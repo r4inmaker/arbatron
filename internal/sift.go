@@ -91,8 +91,18 @@ func ExpiresBetween(min, max time.Duration) SiftAdvancedOption {
 	}
 }
 
+func VolumeBetween(min, max float64) SiftAdvancedOption {
+	return func(c *ClientEvent) bool {
+		if float64(c.Volume) < min || float64(c.Volume) > max {
+			return false
+		}
+
+		return true
+	}
+}
+
 func NewSiftAdvancedOption(opts ...SiftAdvancedOption) SiftAdvancedOption {
-	
+
 	return func(c *ClientEvent) bool {
 		for _, opt := range opts {
 			if !opt(c) {

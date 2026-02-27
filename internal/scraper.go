@@ -46,7 +46,7 @@ func NewScraper(ctx context.Context,
 	crawler := &Crawler{
 		Context:     ctx,
 		URL:         crawlerURL,
-		SiftOption:	 crawlerSiftOption,
+		SiftOption:  crawlerSiftOption,
 		Jobs:        jobs,
 		Events:      events,
 		Wg:          crawlerWg,
@@ -69,16 +69,16 @@ func NewScraper(ctx context.Context,
 		ErrorLogger:       errorLogger,
 		Delay:             embedderDelay,
 		Workers:           embedWorkers,
-		Count: 						 atomic.Int64{},
-		Limit: 						 embedderLimit,
+		Count:             atomic.Int64{},
+		Limit:             embedderLimit,
 	}
 
 	return &Scraper{
-		Crawler:  crawler,
-		Embedder: embedder,
-		Wg:       masterWg,
-		Store:    store,
-		InfoLogger: infoLogger,
+		Crawler:     crawler,
+		Embedder:    embedder,
+		Wg:          masterWg,
+		Store:       store,
+		InfoLogger:  infoLogger,
 		ErrorLogger: errorLogger,
 	}
 }
@@ -96,7 +96,7 @@ func (s *Scraper) Scrape(log bool) {
 type Crawler struct {
 	Context     context.Context
 	URL         string
-	SiftOption 	SiftAdvancedOption
+	SiftOption  SiftAdvancedOption
 	Jobs        chan int
 	Events      chan []ClientEvent
 	Wg          *sync.WaitGroup
@@ -139,6 +139,7 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int, log boo
 
 		// Terminate Crawl
 		if len(polyEvents) == 0 {
+			c.InfoLogger.Printf("Reached the end of API /events endpoint with offset. Terminating...")
 			cancelFunc()
 			resp.Body.Close()
 			return
@@ -165,7 +166,7 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int, log boo
 				return
 			case c.Events <- clientEventsSifted:
 			}
-			
+
 		}
 		resp.Body.Close()
 	}
@@ -229,7 +230,7 @@ func (c *Crawler) Crawl(log bool) {
 
 	<-ctx.Done()
 	c.Wg.Wait()
-	close(c.Events)	
+	close(c.Events)
 }
 
 // Embedder 💾
@@ -245,8 +246,8 @@ type Embedder struct {
 	ErrorLogger       *log.Logger
 	Delay             int
 	Workers           int
-	Limit 					  int64
-	Count 					  atomic.Int64
+	Limit             int64
+	Count             atomic.Int64
 }
 
 func (e *Embedder) Worker(ctx context.Context, cancelFunc func(), id int, events chan []ClientEvent, log bool) {
@@ -320,12 +321,12 @@ func (e *Embedder) Worker(ctx context.Context, cancelFunc func(), id int, events
 			if err != nil {
 				e.ErrorLogger.Printf("[ 💾 ] counting events failed for some reason")
 			} else {
-				e.InfoLogger.Printf("[ 💾 ] inserted %d events into the DB, current number of events in the DB: [%6d]", len(DBEvents), numEvents)
+				e.InfoLogger.Printf("[ 💾 ] inserted %3d events into the DB, current number of events in the DB: [%6d]", len(DBEvents), numEvents)
 			}
 		}
 
-		
 		if e.Count.Load() >= e.Limit {
+			e.InfoLogger.Printf("Reached the limit of new events to add. Terminating...")
 			cancelFunc()
 		}
 		e.Count.Add(int64(len(DBEvents)))
@@ -345,11 +346,11 @@ func (e *Embedder) Embed(log bool, masterWG *sync.WaitGroup) {
 			select {
 			case <-ticker.C:
 				select {
-					case dispatchEvents <- eventBatch:
-					case <- ctx.Done():
-						return
+				case dispatchEvents <- eventBatch:
+				case <-ctx.Done():
+					return
 				}
-			case <- ctx.Done():
+			case <-ctx.Done():
 				return
 			}
 		}

@@ -20,9 +20,9 @@ func NewPostgresStore(connstring string) (*PostgresStore, error) {
 		return nil, err
 	}
 
-	if err := pgs.Reset(); err != nil {
-		return nil, err
-	}
+	// if err := pgs.Reset(); err != nil {
+	// 	return nil, err
+	// }
 
 	if err := pgs.Init(); err != nil {
 		return nil, err
@@ -83,51 +83,42 @@ func (pgs *PostgresStore) Reset() error {
 	return err
 }
 
-// func (pgs *PostgresStore) InsertEvent(ctx context.Context, e DBEvent) (int64, error) {
-// 	query := `
-// 		INSERT INTO events (event_id, title, embedding)
-// 		VALUES ($1, $2, $3);
-// 	`
-
-// 	result, err := pgs.DB.ExecContext(ctx, query)
-// 	if err != nil {
-// 		return 0, err
-// 	}
-// 	numRows, err := result.RowsAffected()
-// 	if err != nil {
-// 		return 0, err
-// 	}
-
-// 	return numRows, nil
-// }
-
 func (pgs *PostgresStore) BulkInsertEvents(ctx context.Context, events []DBEvent) error {
-	tx, err := pgs.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	if len(events) == 0 {
+		return nil
 	}
 
-	defer tx.Rollback()
+	eventIDs := make([]int64, len(events))
+	titles := make([]string, len(events))
+	embeddings := make([]string, len(events))
+	starts := make([]time.Time, len(events))
+	ends := make([]time.Time, len(events))
 
-	stmt, err := tx.Prepare(pq.CopyIn("events", "event_id", "title", "embedding", "start_date", "end_date"))
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, ev := range events {
-		_, err := stmt.Exec(ev.EventID, ev.Title, ev.Embedding, time.Time(ev.StartDate), time.Time(ev.EndDate))
-		if err != nil {
-			return err
-		}
-	}
-
-	_, err = stmt.Exec()
-	if err != nil {
-		return err
+	for i, ev := range events {
+		eventIDs[i] = int64(ev.EventID)
+		titles[i] = ev.Title
+		embeddings[i] = ev.Embedding
+		starts[i] = time.Time(ev.StartDate)
+		ends[i] = time.Time(ev.EndDate)
 	}
 
-	return tx.Commit()
+	// This query takes the arrays, "unzips" them into rows,
+	// and inserts them while ignoring any existing event_ids.
+	query := `
+        INSERT INTO events (event_id, title, embedding, start_date, end_date)
+        SELECT * FROM unnest($1::bigint[], $2::text[], $3::vector[], $4::timestamp[], $5::timestamp[])
+        ON CONFLICT (event_id) DO NOTHING;
+    `
+
+	_, err := pgs.DB.ExecContext(ctx, query,
+		pq.Array(eventIDs),
+		pq.Array(titles),
+		pq.Array(embeddings),
+		pq.Array(starts),
+		pq.Array(ends),
+	)
+
+	return err
 }
 
 func (pgs *PostgresStore) GetEventCount() (int64, error) {

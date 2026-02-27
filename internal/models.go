@@ -52,6 +52,7 @@ type ClientEvent struct {
 	Title       string         `json:"title"`
 	Description string         `json:"description"`
 	Markets     []ClientMarket `json:"markets"`
+	Volume      PolyFloat      `json:"volume"`
 	Tags        []string       `json:"tags"`
 	StartDate   PolyTimestamp  `json:"start_date"`
 	EndDate     PolyTimestamp  `json:"end_date"`
@@ -101,6 +102,7 @@ func (pe *PolyEvent) ToClient() ClientEvent {
 		EventID:     int(pe.EventID),
 		Title:       pe.Title,
 		Description: description,
+		Volume:      pe.Volume,
 		Markets:     markets,
 		Tags:        tags,
 		StartDate:   pe.StartDate,
