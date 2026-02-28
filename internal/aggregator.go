@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,8 +16,8 @@ import (
 	"google.golang.org/genai"
 )
 
-// Scraper 🚧
-type Scraper struct {
+// Aggregator 🚧
+type Aggregator struct {
 	Crawler     *Crawler
 	Embedder    *Embedder
 	Wg          *sync.WaitGroup
@@ -27,14 +26,15 @@ type Scraper struct {
 	ErrorLogger *log.Logger
 }
 
-func NewScraper(ctx context.Context,
+func NewAggregator(ctx context.Context,
 	store PostgresStore,
+	genaiConfig *GenaiConfig,
 	crawlerURL string,
 	crawlerSiftOption SiftAdvancedOption,
 	crawlerDelay, crawlWorkers int,
 	embedderDelay, embedWorkers int,
 	embedderLimit int64,
-	infoLogger, errorLogger *log.Logger) *Scraper {
+	infoLogger, errorLogger *log.Logger) *Aggregator {
 
 	jobs := make(chan int, 1024)
 	events := make(chan []ClientEvent, 64)
@@ -59,9 +59,7 @@ func NewScraper(ctx context.Context,
 
 	embedder := &Embedder{
 		Context:           ctx,
-		GeminiKey:         os.Getenv("GEMINI_KEY"),
-		EmbeddingTaskType: "SEMANTIC_SIMILARITY",
-		ModelName:         "gemini-embedding-001",
+		Config: 			 		 genaiConfig,
 		Events:            events,
 		Wg:                embedderWg,
 		Store:             store,
@@ -73,7 +71,7 @@ func NewScraper(ctx context.Context,
 		Limit:             embedderLimit,
 	}
 
-	return &Scraper{
+	return &Aggregator{
 		Crawler:     crawler,
 		Embedder:    embedder,
 		Wg:          masterWg,
@@ -83,7 +81,7 @@ func NewScraper(ctx context.Context,
 	}
 }
 
-func (s *Scraper) Scrape(log bool) {
+func (s *Aggregator) Aggregate(log bool) {
 	now := time.Now()
 	s.Wg.Add(1)
 	go s.Crawler.Crawl(log)
@@ -145,6 +143,7 @@ func (c *Crawler) Worker(ctx context.Context, cancelFunc func(), id int, log boo
 			return
 		}
 
+		// Convert to client
 		clientEvents := make([]ClientEvent, len(polyEvents))
 		for i, e := range polyEvents {
 			clientEvents[i] = e.ToClient()
@@ -236,9 +235,7 @@ func (c *Crawler) Crawl(log bool) {
 // Embedder 💾
 type Embedder struct {
 	Context           context.Context
-	GeminiKey         string
-	EmbeddingTaskType string
-	ModelName         string
+	Config						*GenaiConfig
 	Events            chan []ClientEvent
 	Wg                *sync.WaitGroup
 	Store             PostgresStore
@@ -254,7 +251,7 @@ func (e *Embedder) Worker(ctx context.Context, cancelFunc func(), id int, events
 	defer e.Wg.Done()
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey: e.GeminiKey,
+		APIKey: e.Config.GeminiKey,
 	})
 	if err != nil {
 		e.ErrorLogger.Printf("failed to create GENAI client (%s)", err.Error())
@@ -268,18 +265,14 @@ func (e *Embedder) Worker(ctx context.Context, cancelFunc func(), id int, events
 		}
 
 		// Embed titles
-		contents := make([]*genai.Content, len(eventBatch))
-		for i, event := range eventBatch {
-			contents[i] = genai.NewContentFromText(event.Title, genai.RoleUser)
+		titles := make([]string, len(eventBatch))
+		for i, ev := range eventBatch {
+			titles[i] = ev.Title
 		}
 
-		var embeddings []*genai.ContentEmbedding
+		var embeddings []string
 		for {
-			result, err := client.Models.EmbedContent(ctx, e.ModelName, contents,
-				&genai.EmbedContentConfig{
-					TaskType:             e.EmbeddingTaskType,
-					OutputDimensionality: genai.Ptr(int32(768))})
-
+			emb, err := e.Config.GenerateEmbeddings(ctx, client, titles)
 			if err != nil {
 				e.ErrorLogger.Printf("[ 💾 ] failed to embed content (%s)", err.Error())
 				if strings.Contains(err.Error(), "429") {
@@ -296,22 +289,20 @@ func (e *Embedder) Worker(ctx context.Context, cancelFunc func(), id int, events
 				}
 			}
 
-			embeddings = result.Embeddings
+			embeddings = emb
 			break
 		}
 
 		// Write them to the DB
-		var DBEvents []DBEvent
-		for i, e := range eventBatch {
-			DBEvents = append(DBEvents,
-				DBEvent{
-					EventID:   e.EventID,
-					Title:     e.Title,
-					Embedding: VecToString(embeddings[i].Values),
-					StartDate: e.StartDate,
-					EndDate:   e.EndDate,
-				},
-			)
+		DBEvents := make([]DBEvent, len(eventBatch))
+		for i, ev := range eventBatch {
+			DBEvents[i] = DBEvent{
+					EventID:   ev.EventID,
+					Title:     ev.Title,
+					Embedding: embeddings[i],
+					StartDate: ev.StartDate,
+					EndDate:   ev.EndDate,
+				}
 		}
 
 		if err := e.Store.BulkInsertEvents(ctx, DBEvents); err != nil {

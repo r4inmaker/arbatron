@@ -101,6 +101,20 @@ func VolumeBetween(min, max float64) SiftAdvancedOption {
 	}
 }
 
+func IsItReallyStillActive() SiftAdvancedOption {
+	return func(c *ClientEvent) bool {
+		for _, m := range c.Markets {
+			for _, p := range m.OutcomePrices {
+				if float32(p) == 0.0 {
+					return false
+				}
+			}
+		}
+
+		return true
+	}
+}
+
 func NewSiftAdvancedOption(opts ...SiftAdvancedOption) SiftAdvancedOption {
 
 	return func(c *ClientEvent) bool {

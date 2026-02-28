@@ -2,15 +2,15 @@ TODO
 
 - Use context in database operations, so shutdown is graceful all the way                 [DONE]
 
-- Create a sift package with filter interface so that results may be sifted,              []
+- Create a sift package with filter interface so that results may be sifted,              [DONE]
   based on arbitrary criteria
   Some filtering done by the URL, other by manually checking sift 
 
-- Figure out how to cluster together events into the arbitrage batch                      [] 
+- Figure out how to cluster together events into the arbitrage batch                      [DONE] 
   (A) Cluster by keyword, use top-k from cosine similarity return
   (B) Discover clusters via an algorithm, using embeddings but no keywords
 
-- Write the arbitrage sniper pipeline 
+- Write the arbitrage discovery pipeline
   (1) Send potential arbitrage clusters to GEMINI api, get pairs in return + reasoning    []
   (2) For each pair, send markets to GEMINI api, get pairs in return + reasoning
 

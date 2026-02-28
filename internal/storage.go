@@ -8,10 +8,12 @@ import (
 
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
+	"google.golang.org/genai"
 )
 
 type PostgresStore struct {
-	DB *sql.DB
+	DB 					*sql.DB
+	EmbedConfig *GenaiConfig
 }
 
 func NewPostgresStore(connstring string) (*PostgresStore, error) {
@@ -58,6 +60,8 @@ func (pgs *PostgresStore) Init() error {
 	CREATE INDEX IF NOT EXISTS idx_event_id ON events(event_id);
 	`
 	_, err := pgs.DB.Exec(query)
+	pgs.EmbedConfig = NewGenaiConfig()
+
 	return err
 }
 
@@ -130,4 +134,85 @@ func (pgs *PostgresStore) GetEventCount() (int64, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// Clustering
+func (pgs *PostgresStore) ClusterAroundKeyword(ctx context.Context, client *genai.Client, keyword string, topK int, threshold float64) ([]DBEvent, error) {
+	// get the embedding of the keyword
+	embeddings, err := pgs.EmbedConfig.GenerateEmbeddings(ctx, client, []string{keyword})
+	if err != nil {
+		return nil, err
+	}
+	if len(embeddings) != 1 {
+		return nil, fmt.Errorf("invalid length of embeding result: %d", len(embeddings))
+	}
+
+	query := `
+		SELECT 
+    	event_id, 
+    	title, 
+    	start_date,
+    	embedding <=> $1 AS distance
+		FROM events
+		WHERE (embedding <=> $1) < $2
+		ORDER BY embedding <=> $1 ASC
+		LIMIT $3;
+	`
+	rows, err := pgs.DB.QueryContext(ctx, query, embeddings[0], threshold, topK)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []DBEvent
+	for rows.Next() {
+		var ev DBEvent
+		if err := rows.Scan(&ev.EventID, &ev.Title, &ev.StartDate, &ev.Embedding); err != nil {
+			return nil, err
+		}
+
+		events = append(events, ev)
+	}
+
+	return events, nil
+}
+
+func (pgs *PostgresStore) ClusterAroundEventID(ctx context.Context, id int64, threshold float64) ([]DBEvent, error) {
+	query := `
+    WITH target AS (
+        SELECT embedding FROM events WHERE event_id = $1
+    )
+    SELECT event_id, title, start_date
+    FROM events, target
+    WHERE events.event_id != $1
+    AND events.embedding <=> target.embedding < $2
+    ORDER BY events.embedding <=> target.embedding ASC;
+    `
+	var exists bool
+	err := pgs.DB.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM events WHERE event_id = $1)", id).Scan(&exists)
+	if !exists {
+		return nil, fmt.Errorf("event_id %d does not exist in database", id)
+	}
+
+	rows, err := pgs.DB.QueryContext(ctx, query, id, threshold)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []DBEvent
+
+	for rows.Next() {
+		var e DBEvent
+		if err := rows.Scan(&e.EventID, &e.Title, &e.StartDate); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+
+	return events, nil
+}
+
+func (pgs *PostgresStore) ClusterDiscovery() {
+
 }

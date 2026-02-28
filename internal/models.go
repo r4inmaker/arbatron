@@ -82,7 +82,65 @@ type DBEvent struct {
 	EndDate   PolyTimestamp
 }
 
-// Convert Methods Polymarket-Client
+// Discovery Models (LLM schema)
+type DiscoveryEvent struct {
+	EventID int64								`json:"event_id"`		
+	Title  	string							`json:"title"`
+	Markets []DiscoveryMarket		`json:"markets"`
+}
+
+type DiscoveryMarket struct {
+	MarketID 			int64  							`json:"market_id"`
+	Question 			string							`json:"question"`
+	Description 	string							`json:"description"`
+	Outcomes			PolyOutcomes				`json:"outcomes"`
+	OutcomePrices PolyOutcomePrices		`json:"outcome_prices"`
+}
+
+// Arbitrages (LLM schema)
+type GenaiArbitrageMarket struct {
+    MarketID float64 			`json:"market_id"`
+    Title    string  			`json:"title"`
+    Outcome  string  			`json:"outcome"`
+		OutcomePrice float32	`json:"outcome_price"`
+}
+
+type GenaiArbitrage struct {
+    Title         []string              `json:"title"`
+    ROI           float64               `json:"roi"`
+    Reasoning     string                `json:"reasoning"`
+    Risk          float64               `json:"risk"`
+    ArbitrageType string                `json:"arbitrage_type"`
+    Markets       []GenaiArbitrageMarket `json:"markets"`
+}
+
+type GenaiArbitrageResponse struct {
+    Arbitrages []GenaiArbitrage `json:"arbitrages"`
+}
+
+func (pe *PolyEvent) ToDiscovery() DiscoveryEvent {
+	markets := make([]DiscoveryMarket, len(pe.Markets))
+	for i, m := range pe.Markets {
+		markets[i] = m.ToDiscovery()
+	}
+
+	return DiscoveryEvent{
+		EventID: int64(pe.EventID),
+		Title: pe.Title,
+		Markets: markets,
+	}
+}
+
+func (pm *PolyMarket) ToDiscovery() DiscoveryMarket {
+	return DiscoveryMarket{
+		MarketID: int64(pm.MarketID),
+		Question: pm.Question,
+		Description: pm.Description,
+		Outcomes: pm.Outcomes,
+		OutcomePrices: pm.OutcomePrices,
+	}
+}
+
 func (pe *PolyEvent) ToClient() ClientEvent {
 
 	markets := make([]ClientMarket, len(pe.Markets))
