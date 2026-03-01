@@ -97,7 +97,32 @@ type DiscoveryMarket struct {
 	OutcomePrices PolyOutcomePrices		`json:"outcome_prices"`
 }
 
-// Arbitrages (LLM schema)
+type ClusteringEvent struct {
+    EventID  int64              `json:"event_id"`
+    Title    string             `json:"title"`
+    Markets  []ClusteringMarket `json:"markets"`
+}
+
+type ClusteringMarket struct {
+    MarketID int64  `json:"market_id"`
+    Question string `json:"question"`
+}
+
+
+type GenaiClusteringMarketRef struct {
+    MarketID    int64  `json:"market_id"`
+    Question    string `json:"market_title"`
+}
+
+type GenaiArbitrageCluster struct {
+    Markets         []GenaiClusteringMarketRef `json:"markets"`
+    Reasoning       string                `json:"reasoning"`
+}
+
+type GenaiClusteringResponse struct {
+    ArbitrageClusters []GenaiArbitrageCluster `json:"arbitrage_clusters"`
+}
+
 type GenaiArbitrageMarket struct {
     MarketID float64 			`json:"market_id"`
     Title    string  			`json:"title"`
@@ -113,6 +138,7 @@ type GenaiArbitrage struct {
     ArbitrageType string                `json:"arbitrage_type"`
     Markets       []GenaiArbitrageMarket `json:"markets"`
 }
+
 
 type GenaiArbitrageResponse struct {
     Arbitrages []GenaiArbitrage `json:"arbitrages"`
@@ -140,6 +166,26 @@ func (pm *PolyMarket) ToDiscovery() DiscoveryMarket {
 		OutcomePrices: pm.OutcomePrices,
 	}
 }
+
+func (pe *PolyEvent) ToClustering() ClusteringEvent {
+    markets := make([]ClusteringMarket, len(pe.Markets))
+    for i, m := range pe.Markets {
+        markets[i] = m.ToClustering()
+    }
+    return ClusteringEvent{
+        EventID: int64(pe.EventID),
+        Title:   pe.Title,
+        Markets: markets,
+    }
+}
+
+func (pm *PolyMarket) ToClustering() ClusteringMarket {
+    return ClusteringMarket{
+        MarketID: int64(pm.MarketID),
+        Question: pm.Question,
+    }
+}
+
 
 func (pe *PolyEvent) ToClient() ClientEvent {
 

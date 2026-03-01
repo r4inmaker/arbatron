@@ -27,22 +27,22 @@ import (
 // Reasoning: 200_000 tokens or after context is 80% full
 //
 
-func GetMarketsFromEventID(eventId int64) (DiscoveryEvent, error) {
+func GetMarketsFromEventID(eventId int64) (PolyEvent, error) {
 	eventURL, err := url.JoinPath("https://gamma-api.polymarket.com/events", strconv.FormatInt(eventId, 10))
 	if err != nil {
-		return DiscoveryEvent{}, err
+		return PolyEvent{}, err
 	}
 
 	resp, err := http.Get(eventURL)
 	if err != nil {
-		return DiscoveryEvent{}, err
+		return PolyEvent{}, err
 	}
 	defer resp.Body.Close()
 
 	var polyEvent PolyEvent
 	if err := json.NewDecoder(resp.Body).Decode(&polyEvent); err != nil {
-		return DiscoveryEvent{}, err
+		return PolyEvent{}, err
 	}
 
-	return polyEvent.ToDiscovery(), nil
+	return polyEvent, nil
 }
