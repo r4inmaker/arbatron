@@ -338,7 +338,7 @@ func (pt *PolyTimestamp) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Parse different layouts cause devs are retarded
+	// Parse different layouts since the API is inconsistent
 	layouts := []string{
 		time.RFC3339,                 // 2021-08-11T00:00:00Z
 		"2006-01-02 15:04:05.999-07", // 2022-07-27 14:40:10.891+00
